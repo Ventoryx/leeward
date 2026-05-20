@@ -4,8 +4,8 @@
 //!
 //! ## Features
 //!
-//! - **Unprivileged**: Uses user namespaces, no root required
-//! - **Secure**: Multiple isolation layers (namespaces, Landlock, seccomp, rlimits)
+//! - **Unprivileged**: Uses Landlock v5 + seccomp-BPF, no root required
+//! - **Secure**: Multiple isolation layers (Landlock, seccomp, rlimits, capabilities)
 //! - **Fast**: No VM or container startup overhead
 //! - **Simple**: Single function call to run sandboxed code
 //!
@@ -62,8 +62,7 @@
 //!
 //! ## Requirements
 //!
-//! - Linux kernel 5.13+ (for Landlock)
-//! - User namespaces enabled
+//! - Linux kernel 6.12+ (for Landlock ABI 5)
 //! - Seccomp enabled
 
 // Internal modules

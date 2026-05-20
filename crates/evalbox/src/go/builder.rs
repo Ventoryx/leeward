@@ -1,8 +1,6 @@
 //! Go execution builder.
 
-use std::collections::hash_map::DefaultHasher;
 use std::fs;
-use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::LazyLock;
 use std::time::Duration;
@@ -25,6 +23,7 @@ static PROBE_CACHE: LazyLock<ProbeCache> = LazyLock::new(ProbeCache::new);
 ///
 /// Created by [`go::run()`](super::run). Configure with method chaining,
 /// then execute with `.exec()`.
+#[must_use]
 #[derive(Debug, Clone)]
 pub struct GoBuilder {
     code: String,
@@ -222,6 +221,8 @@ impl GoBuilder {
             binary
         };
 
+        // TODO: Plan::executable_file() to avoid double-copy of binary content.
+        // Currently the binary is read into memory then copied to workspace.
         // Execute in restrictive sandbox
         let mut plan = Plan::new(["/work/main".to_string()])
             .cwd("/work")
@@ -307,7 +308,7 @@ fn compile_in_sandbox(
 
     if !output.success() {
         return Err(Error::Compilation {
-            stderr: output.stderr_str(),
+            stderr: output.stderr_str().into_owned(),
             exit_code: Some(output.exit_code.unwrap_or(-1)),
         });
     }
@@ -334,12 +335,28 @@ fn get_go_cache_dir() -> Result<PathBuf> {
     Ok(cache_base.join("evalbox").join("go"))
 }
 
+/// Compute a stable cache key using FNV-1a.
+///
+/// Uses a simple FNV-1a implementation instead of `DefaultHasher` which is not
+/// guaranteed to be stable across Rust versions. The Go binary cache is persisted
+/// to disk, so stability matters.
 fn compute_cache_key(code: &str, go_mod: Option<&str>, cgo_enabled: bool) -> String {
-    let mut hasher = DefaultHasher::new();
-    code.hash(&mut hasher);
-    go_mod.hash(&mut hasher);
-    cgo_enabled.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
+    let mut hash: u64 = 0xcbf29ce484222325; // FNV-1a offset basis
+    for byte in code.as_bytes() {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3); // FNV-1a prime
+    }
+    if let Some(m) = go_mod {
+        for byte in m.as_bytes() {
+            hash ^= *byte as u64;
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+    }
+    if cgo_enabled {
+        hash ^= 1;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
 }
 
 #[cfg(test)]

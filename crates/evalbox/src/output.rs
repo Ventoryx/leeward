@@ -2,11 +2,16 @@
 //!
 //! Contains the result of a sandboxed execution: stdout, stderr, exit code, and timing.
 
+use std::borrow::Cow;
 use std::time::Duration;
 
 pub use evalbox_sandbox::Status;
 
 /// Output from a sandboxed execution.
+///
+/// This is a simplified version of [`evalbox_sandbox::Output`] with
+/// `exit_code` defaulting to `-1` when unavailable.
+#[must_use]
 #[derive(Debug, Clone)]
 pub struct Output {
     pub stdout: Vec<u8>,
@@ -35,13 +40,13 @@ impl Output {
     }
 
     #[inline]
-    pub fn stdout_str(&self) -> String {
-        String::from_utf8_lossy(&self.stdout).into_owned()
+    pub fn stdout_str(&self) -> Cow<'_, str> {
+        String::from_utf8_lossy(&self.stdout)
     }
 
     #[inline]
-    pub fn stderr_str(&self) -> String {
-        String::from_utf8_lossy(&self.stderr).into_owned()
+    pub fn stderr_str(&self) -> Cow<'_, str> {
+        String::from_utf8_lossy(&self.stderr)
     }
 }
 
