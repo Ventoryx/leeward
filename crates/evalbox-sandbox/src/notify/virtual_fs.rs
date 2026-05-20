@@ -12,36 +12,39 @@
 //! | `/tmp` | `{workspace}/tmp` |
 //! | `/home` | `{workspace}/home` |
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// Virtual filesystem with path translation.
+///
+/// Uses a `Vec` instead of `HashMap` since there are typically only ~3 mappings,
+/// where linear scan is faster than hash lookup.
 #[derive(Debug, Clone)]
 pub struct VirtualFs {
     /// Maps virtual prefix → real prefix.
-    mappings: HashMap<PathBuf, PathBuf>,
+    mappings: Vec<(PathBuf, PathBuf)>,
 }
 
 impl VirtualFs {
     /// Create a new `VirtualFs` with default mappings for the given workspace root.
     pub fn new(workspace_root: &Path) -> Self {
-        let mut mappings = HashMap::new();
-        mappings.insert(PathBuf::from("/work"), workspace_root.join("work"));
-        mappings.insert(PathBuf::from("/tmp"), workspace_root.join("tmp"));
-        mappings.insert(PathBuf::from("/home"), workspace_root.join("home"));
+        let mappings = vec![
+            (PathBuf::from("/work"), workspace_root.join("work")),
+            (PathBuf::from("/tmp"), workspace_root.join("tmp")),
+            (PathBuf::from("/home"), workspace_root.join("home")),
+        ];
         Self { mappings }
     }
 
     /// Create an empty `VirtualFs` with no mappings.
     pub fn empty() -> Self {
         Self {
-            mappings: HashMap::new(),
+            mappings: Vec::new(),
         }
     }
 
     /// Add a path mapping.
     pub fn add_mapping(&mut self, virtual_path: impl Into<PathBuf>, real_path: impl Into<PathBuf>) {
-        self.mappings.insert(virtual_path.into(), real_path.into());
+        self.mappings.push((virtual_path.into(), real_path.into()));
     }
 
     /// Translate a path from child's view to host's view.
@@ -65,7 +68,7 @@ impl VirtualFs {
         let path = Path::new(path);
 
         // Check virtual mappings
-        for virtual_prefix in self.mappings.keys() {
+        for (virtual_prefix, _) in &self.mappings {
             if path.starts_with(virtual_prefix) {
                 return true;
             }

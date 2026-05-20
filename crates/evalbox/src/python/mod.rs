@@ -220,13 +220,8 @@ print(json.dumps(result))
 
         runtime.mounts = mounts;
 
-        match resolve_shared_libs(binary) {
-            Ok(libs) => {
-                runtime.shared_libs = libs;
-            }
-            Err(e) => {
-                eprintln!("Warning: failed to resolve shared libs for Python: {e}");
-            }
+        if let Ok(libs) = resolve_shared_libs(binary) {
+            runtime.shared_libs = libs;
         }
 
         Ok(runtime)

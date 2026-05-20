@@ -8,7 +8,7 @@
 //!
 //! The BPF filter runs on every syscall:
 //!
-//! 1. Verify architecture is `x86_64` (kill otherwise)
+//! 1. Verify architecture is supported (x86_64 or aarch64, kill otherwise)
 //! 2. Load syscall number from `seccomp_data`
 //! 3. Block `clone3` entirely (cannot inspect flags in struct)
 //! 4. For `clone`, inspect flags and block namespace creation
@@ -83,9 +83,17 @@ const BPF_JEQ: u16 = 0x10;
 const BPF_JSET: u16 = 0x40;
 const BPF_K: u16 = 0x00;
 
-const AUDIT_ARCH_X86_64: u32 = 0xc000003e;
+// BPF ALU operations
+const BPF_ALU: u16 = 0x04;
+const BPF_AND: u16 = 0x50;
 
-// seccomp_data offsets (x86_64)
+#[cfg(target_arch = "x86_64")]
+const AUDIT_ARCH: u32 = 0xc000003e; // AUDIT_ARCH
+
+#[cfg(target_arch = "aarch64")]
+const AUDIT_ARCH: u32 = 0xc00000b7; // AUDIT_ARCH_AARCH64
+
+// seccomp_data offsets (same layout on x86_64 and aarch64)
 const OFFSET_SYSCALL_NR: u32 = 0;
 const OFFSET_ARCH: u32 = 4;
 const OFFSET_ARGS_0: u32 = 16; // args[0], lower 32 bits
@@ -158,7 +166,11 @@ pub struct SockFprog {
     pub filter: *const SockFilter,
 }
 
-/// Syscalls allowed in the sandbox.
+/// Base syscalls allowed on all architectures (x86_64 and aarch64).
+///
+/// **Ordering**: Hot syscalls first for faster BPF linear scan.
+/// The kernel checks each JEQ instruction sequentially, so placing
+/// the most frequently called syscalls first reduces average iterations.
 ///
 /// ## Special handling (not in this list):
 /// - `clone` - Allowed with flag filtering (blocks `CLONE_NEW`*)
@@ -175,14 +187,23 @@ pub struct SockFprog {
 /// ## Notes:
 /// - `kill`/`tgkill` safe due to Landlock v5 `SCOPE_SIGNAL` isolation
 /// - `prctl` kept for runtime needs (`PR_SET_NAME`, etc.)
-pub const DEFAULT_WHITELIST: &[i64] = &[
-    // === Basic I/O ===
+const BASE_WHITELIST: &[i64] = &[
+    // === Hot syscalls (ordered by typical frequency) ===
     libc::SYS_read,
     libc::SYS_write,
     libc::SYS_close,
-    libc::SYS_close_range, // Modern fd range closing
-    libc::SYS_fstat,
+    libc::SYS_futex,
+    libc::SYS_mmap,
+    libc::SYS_mprotect,
+    libc::SYS_munmap,
+    libc::SYS_brk,
+    libc::SYS_rt_sigaction,
+    libc::SYS_rt_sigprocmask,
+    libc::SYS_rt_sigreturn,
+    libc::SYS_openat,
     libc::SYS_lseek,
+    // === Basic I/O ===
+    libc::SYS_close_range, // Modern fd range closing
     libc::SYS_pread64,
     libc::SYS_pwrite64,
     libc::SYS_readv,
@@ -192,7 +213,6 @@ pub const DEFAULT_WHITELIST: &[i64] = &[
     libc::SYS_preadv2,
     libc::SYS_pwritev2,
     libc::SYS_dup,
-    libc::SYS_dup2,
     libc::SYS_dup3,
     libc::SYS_fcntl,
     libc::SYS_flock,
@@ -200,11 +220,7 @@ pub const DEFAULT_WHITELIST: &[i64] = &[
     libc::SYS_fdatasync,
     libc::SYS_ftruncate,
     libc::SYS_fadvise64,
-    libc::SYS_access,
-    libc::SYS_pipe,
     libc::SYS_pipe2,
-    libc::SYS_select,
-    libc::SYS_poll,
     libc::SYS_ppoll,
     libc::SYS_pselect6,
     // Efficient file operations (Python/Node use these)
@@ -213,10 +229,6 @@ pub const DEFAULT_WHITELIST: &[i64] = &[
     libc::SYS_splice,
     libc::SYS_tee,
     // === Memory ===
-    libc::SYS_mmap,
-    libc::SYS_mprotect,
-    libc::SYS_munmap,
-    libc::SYS_brk,
     libc::SYS_mremap,
     libc::SYS_msync,
     libc::SYS_mincore,
@@ -239,7 +251,6 @@ pub const DEFAULT_WHITELIST: &[i64] = &[
     libc::SYS_getresuid,
     libc::SYS_getresgid,
     // setresuid/setresgid REMOVED - no need to change UID in sandbox
-    libc::SYS_getpgrp,
     // setpgid/setsid REMOVED - session manipulation unnecessary
     libc::SYS_getgroups,
     libc::SYS_getsid,
@@ -254,48 +265,29 @@ pub const DEFAULT_WHITELIST: &[i64] = &[
     libc::SYS_gettimeofday,
     libc::SYS_nanosleep,
     // === Filesystem (Landlock restricts actual access) ===
-    libc::SYS_openat,
-    libc::SYS_open,
-    libc::SYS_creat,
-    libc::SYS_unlink,
     libc::SYS_unlinkat,
-    libc::SYS_rename,
     libc::SYS_renameat,
     libc::SYS_renameat2,
-    libc::SYS_mkdir,
     libc::SYS_mkdirat,
-    libc::SYS_rmdir,
-    libc::SYS_symlink,
     libc::SYS_symlinkat,
-    libc::SYS_link,
     libc::SYS_linkat,
-    libc::SYS_chmod,
     libc::SYS_fchmod,
     libc::SYS_fchmodat,
-    libc::SYS_chown,
     libc::SYS_fchown,
     libc::SYS_fchownat,
-    libc::SYS_lchown,
     libc::SYS_utimensat,
     libc::SYS_faccessat,
     libc::SYS_faccessat2,
-    libc::SYS_stat,
-    libc::SYS_lstat,
     libc::SYS_newfstatat,
     libc::SYS_statfs,
     libc::SYS_fstatfs,
     libc::SYS_statx,
-    libc::SYS_getdents,
     libc::SYS_getdents64,
     libc::SYS_getcwd,
     libc::SYS_chdir,
     libc::SYS_fchdir,
-    libc::SYS_readlink,
     libc::SYS_readlinkat,
     // === Signals (safe due to Landlock SCOPE_SIGNAL) ===
-    libc::SYS_rt_sigaction,
-    libc::SYS_rt_sigprocmask,
-    libc::SYS_rt_sigreturn,
     libc::SYS_rt_sigsuspend,
     libc::SYS_rt_sigpending,
     libc::SYS_rt_sigtimedwait,
@@ -306,14 +298,11 @@ pub const DEFAULT_WHITELIST: &[i64] = &[
     // === Process control ===
     libc::SYS_execve,
     // execveat REMOVED - with memfd_create enables fileless execution
-    libc::SYS_fork,  // Safe: no flags
-    libc::SYS_vfork, // Safe: no flags
     libc::SYS_exit,
     libc::SYS_exit_group,
     libc::SYS_wait4,
     libc::SYS_waitid,
     libc::SYS_set_tid_address,
-    libc::SYS_futex,
     libc::SYS_get_robust_list,
     libc::SYS_set_robust_list,
     libc::SYS_sched_yield,
@@ -324,7 +313,6 @@ pub const DEFAULT_WHITELIST: &[i64] = &[
     libc::SYS_sched_getscheduler,
     libc::SYS_sched_get_priority_max,
     libc::SYS_sched_get_priority_min,
-    libc::SYS_arch_prctl,
     libc::SYS_prctl, // Kept for PR_SET_NAME, etc. PR_SET_SECCOMP is no-op
     libc::SYS_getrandom,
     libc::SYS_prlimit64,
@@ -334,18 +322,14 @@ pub const DEFAULT_WHITELIST: &[i64] = &[
     // ioctl is handled specially below - blocks TIOCSTI, TIOCSETD, TIOCLINUX
     // (not in whitelist, filtered like socket)
     // === Event mechanisms ===
-    libc::SYS_eventfd,
     libc::SYS_eventfd2,
-    libc::SYS_epoll_create,
     libc::SYS_epoll_create1,
     libc::SYS_epoll_ctl,
-    libc::SYS_epoll_wait,
     libc::SYS_epoll_pwait,
     libc::SYS_epoll_pwait2,
     libc::SYS_timerfd_create,
     libc::SYS_timerfd_settime,
     libc::SYS_timerfd_gettime,
-    libc::SYS_signalfd,
     libc::SYS_signalfd4,
     // === Sockets (filtered separately for domain/type) ===
     // SYS_socket handled specially - blocks AF_NETLINK, SOCK_RAW
@@ -368,6 +352,60 @@ pub const DEFAULT_WHITELIST: &[i64] = &[
     libc::SYS_recvmmsg,
 ];
 
+/// Legacy x86_64 syscalls not available on aarch64.
+///
+/// On aarch64, glibc always uses the modern `*at()` equivalents
+/// (e.g., `openat` instead of `open`, `newfstatat` instead of `stat`).
+/// These legacy syscalls only exist in the x86_64 syscall table.
+#[cfg(target_arch = "x86_64")]
+const LEGACY_WHITELIST: &[i64] = &[
+    libc::SYS_fstat,
+    libc::SYS_dup2,
+    libc::SYS_access,
+    libc::SYS_pipe,
+    libc::SYS_select,
+    libc::SYS_poll,
+    // Filesystem (legacy variants, aarch64 uses *at() equivalents)
+    libc::SYS_open,
+    libc::SYS_creat,
+    libc::SYS_unlink,
+    libc::SYS_rename,
+    libc::SYS_mkdir,
+    libc::SYS_rmdir,
+    libc::SYS_symlink,
+    libc::SYS_link,
+    libc::SYS_chmod,
+    libc::SYS_chown,
+    libc::SYS_lchown,
+    libc::SYS_stat,
+    libc::SYS_lstat,
+    libc::SYS_getdents,
+    libc::SYS_readlink,
+    // Process control (aarch64 uses clone() for all)
+    libc::SYS_fork,  // Safe: no flags
+    libc::SYS_vfork, // Safe: no flags
+    libc::SYS_getpgrp,
+    libc::SYS_arch_prctl,
+    // Event mechanisms (legacy variants)
+    libc::SYS_eventfd,
+    libc::SYS_epoll_create,
+    libc::SYS_epoll_wait,
+    libc::SYS_signalfd,
+];
+
+/// On aarch64, all equivalent functionality is provided by the modern
+/// syscalls already in `BASE_WHITELIST`.
+#[cfg(target_arch = "aarch64")]
+const LEGACY_WHITELIST: &[i64] = &[];
+
+/// Returns the default syscall whitelist for the current architecture.
+///
+/// Combines `BASE_WHITELIST` (common to all architectures) with
+/// `LEGACY_WHITELIST` (x86_64-only legacy syscalls).
+pub fn default_whitelist() -> Vec<i64> {
+    [BASE_WHITELIST, LEGACY_WHITELIST].concat()
+}
+
 /// Builds a BPF filter with clone and socket argument filtering.
 ///
 /// ## Filter Layout
@@ -388,6 +426,7 @@ pub const DEFAULT_WHITELIST: &[i64] = &[
 /// # Panics
 ///
 /// Panics if `syscalls.len()` > 200 (BPF jump offsets are u8)
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 pub fn build_whitelist_filter(syscalls: &[i64]) -> Vec<SockFilter> {
     assert!(
         syscalls.len() <= MAX_WHITELIST_SIZE,
@@ -403,7 +442,7 @@ pub fn build_whitelist_filter(syscalls: &[i64]) -> Vec<SockFilter> {
     filter.push(SockFilter::stmt(BPF_LD | BPF_W | BPF_ABS, OFFSET_ARCH));
     filter.push(SockFilter::jump(
         BPF_JMP | BPF_JEQ | BPF_K,
-        AUDIT_ARCH_X86_64,
+        AUDIT_ARCH,
         1,
         0,
     ));
@@ -448,8 +487,8 @@ pub fn build_whitelist_filter(syscalls: &[i64]) -> Vec<SockFilter> {
     ));
 
     // === ioctl -> ioctl_handler ===
-    // Jump to ioctl handler: skip whitelist + KILL + ALLOW + ERRNO + clone_handler(4) + socket_handler(6)
-    let ioctl_handler_offset = (n + 3 + 4 + 6) as u8;
+    // Jump to ioctl handler: skip whitelist + KILL + ALLOW + ERRNO + clone_handler(4) + socket_handler(7)
+    let ioctl_handler_offset = (n + 3 + 4 + 7) as u8;
     filter.push(SockFilter::jump(
         BPF_JMP | BPF_JEQ | BPF_K,
         libc::SYS_ioctl as u32,
@@ -493,22 +532,26 @@ pub fn build_whitelist_filter(syscalls: &[i64]) -> Vec<SockFilter> {
     // Blocked flags -> KILL
     filter.push(SockFilter::stmt(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS));
 
-    // === Socket handler (6 instructions) ===
+    // === Socket handler (7 instructions) ===
     // Load socket domain (args[0])
     filter.push(SockFilter::stmt(BPF_LD | BPF_W | BPF_ABS, OFFSET_ARGS_0));
     // Block AF_NETLINK (domain 16) - access to nf_tables, etc.
+    // jt=4: skip load_type(2), AND(3), JEQ_RAW(4), ALLOW(5) → land on KILL(6)
     filter.push(SockFilter::jump(
         BPF_JMP | BPF_JEQ | BPF_K,
         AF_NETLINK,
-        3,
+        4,
         0,
-    )); // -> KILL
+    ));
 
     // Load socket type (args[1])
     filter.push(SockFilter::stmt(BPF_LD | BPF_W | BPF_ABS, OFFSET_ARGS_1));
-    // Block SOCK_RAW (type 3) - but need to mask out flags (SOCK_NONBLOCK, etc.)
-    // SOCK_RAW = 3, SOCK_NONBLOCK = 0x800, SOCK_CLOEXEC = 0x80000
-    // We check if (type & 0xF) == SOCK_RAW
+    // Mask out SOCK_NONBLOCK (0x800) and SOCK_CLOEXEC (0x80000) flags.
+    // Without this, socket(AF_INET, SOCK_RAW | SOCK_NONBLOCK, 0) = 0x803 != 3
+    // would bypass the SOCK_RAW check.
+    #[allow(clippy::cast_possible_truncation)]
+    filter.push(SockFilter::stmt(BPF_ALU | BPF_AND | BPF_K, 0xF));
+    // Block SOCK_RAW (type 3) after masking
     filter.push(SockFilter::jump(BPF_JMP | BPF_JEQ | BPF_K, SOCK_RAW, 1, 0)); // -> KILL
 
     // Socket OK -> ALLOW
@@ -580,6 +623,7 @@ pub fn seccomp_available() -> bool {
 /// # Panics
 ///
 /// Panics if `syscalls.len()` > 200 (BPF jump offsets are u8).
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 pub fn build_notify_filter(syscalls: &[i64]) -> Vec<SockFilter> {
     assert!(
         syscalls.len() <= MAX_WHITELIST_SIZE,
@@ -595,7 +639,7 @@ pub fn build_notify_filter(syscalls: &[i64]) -> Vec<SockFilter> {
     filter.push(SockFilter::stmt(BPF_LD | BPF_W | BPF_ABS, OFFSET_ARCH));
     filter.push(SockFilter::jump(
         BPF_JMP | BPF_JEQ | BPF_K,
-        AUDIT_ARCH_X86_64,
+        AUDIT_ARCH,
         1,
         0,
     ));
@@ -627,23 +671,37 @@ pub fn build_notify_filter(syscalls: &[i64]) -> Vec<SockFilter> {
     filter
 }
 
-/// Syscalls that are intercepted by the notify filter for filesystem virtualization.
-pub const NOTIFY_FS_SYSCALLS: &[i64] = &[
+/// Base FS syscalls intercepted by the notify filter (all architectures).
+const BASE_NOTIFY_FS_SYSCALLS: &[i64] = &[
     libc::SYS_openat,
-    libc::SYS_open,
-    libc::SYS_creat,
-    libc::SYS_access,
     libc::SYS_faccessat,
     libc::SYS_faccessat2,
-    libc::SYS_stat,
-    libc::SYS_lstat,
     libc::SYS_newfstatat,
     libc::SYS_statx,
-    libc::SYS_readlink,
     libc::SYS_readlinkat,
 ];
 
+/// Legacy FS syscalls intercepted on x86_64 only.
+#[cfg(target_arch = "x86_64")]
+const LEGACY_NOTIFY_FS_SYSCALLS: &[i64] = &[
+    libc::SYS_open,
+    libc::SYS_creat,
+    libc::SYS_access,
+    libc::SYS_stat,
+    libc::SYS_lstat,
+    libc::SYS_readlink,
+];
+
+#[cfg(target_arch = "aarch64")]
+const LEGACY_NOTIFY_FS_SYSCALLS: &[i64] = &[];
+
+/// Returns the FS syscalls to intercept via the notify filter.
+pub fn notify_fs_syscalls() -> Vec<i64> {
+    [BASE_NOTIFY_FS_SYSCALLS, LEGACY_NOTIFY_FS_SYSCALLS].concat()
+}
+
 #[cfg(test)]
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 mod tests {
     use super::*;
 
@@ -652,13 +710,14 @@ mod tests {
         let syscalls = &[libc::SYS_read, libc::SYS_write, libc::SYS_exit];
         let filter = build_whitelist_filter(syscalls);
         // 3 (arch) + 1 (load) + 4 (clone3/clone/socket/ioctl) + 3 (whitelist) + 3 (kill/allow/errno)
-        // + 4 (clone handler) + 6 (socket handler) + 6 (ioctl handler) = 30
-        assert_eq!(filter.len(), 30);
+        // + 4 (clone handler) + 7 (socket handler with AND mask) + 6 (ioctl handler) = 31
+        assert_eq!(filter.len(), 31);
     }
 
     #[test]
     fn clone3_returns_enosys() {
-        let filter = build_whitelist_filter(DEFAULT_WHITELIST);
+        let wl = default_whitelist();
+        let filter = build_whitelist_filter(&wl);
         let clone3_check = &filter[4];
         assert_eq!(clone3_check.k, libc::SYS_clone3 as u32);
         assert!(clone3_check.jt > 0);
@@ -667,7 +726,8 @@ mod tests {
 
     #[test]
     fn clone_has_flag_check() {
-        let filter = build_whitelist_filter(DEFAULT_WHITELIST);
+        let wl = default_whitelist();
+        let filter = build_whitelist_filter(&wl);
         let clone_check = &filter[5];
         assert_eq!(clone_check.k, libc::SYS_clone as u32);
         assert!(clone_check.jt > 0);
@@ -680,7 +740,8 @@ mod tests {
 
     #[test]
     fn socket_is_filtered() {
-        let filter = build_whitelist_filter(DEFAULT_WHITELIST);
+        let wl = default_whitelist();
+        let filter = build_whitelist_filter(&wl);
         let socket_check = &filter[6];
         assert_eq!(socket_check.k, libc::SYS_socket as u32);
         assert!(socket_check.jt > 0);
@@ -688,7 +749,8 @@ mod tests {
 
     #[test]
     fn ioctl_is_filtered() {
-        let filter = build_whitelist_filter(DEFAULT_WHITELIST);
+        let wl = default_whitelist();
+        let filter = build_whitelist_filter(&wl);
         let ioctl_check = &filter[7];
         assert_eq!(ioctl_check.k, libc::SYS_ioctl as u32);
         assert!(ioctl_check.jt > 0);
@@ -707,26 +769,30 @@ mod tests {
 
     #[test]
     fn dangerous_syscalls_removed() {
+        let wl = default_whitelist();
         // These should NOT be in the whitelist
-        assert!(!DEFAULT_WHITELIST.contains(&libc::SYS_clone));
-        assert!(!DEFAULT_WHITELIST.contains(&libc::SYS_clone3));
-        assert!(!DEFAULT_WHITELIST.contains(&libc::SYS_socket)); // Filtered separately
-        assert!(!DEFAULT_WHITELIST.contains(&libc::SYS_memfd_create));
-        assert!(!DEFAULT_WHITELIST.contains(&libc::SYS_execveat));
-        assert!(!DEFAULT_WHITELIST.contains(&libc::SYS_setresuid));
-        assert!(!DEFAULT_WHITELIST.contains(&libc::SYS_setresgid));
-        assert!(!DEFAULT_WHITELIST.contains(&libc::SYS_setsid));
-        assert!(!DEFAULT_WHITELIST.contains(&libc::SYS_setpgid));
-        // Note: ioctl is now allowed as it's needed for terminal ops and Landlock restricts device access
+        assert!(!wl.contains(&libc::SYS_clone));
+        assert!(!wl.contains(&libc::SYS_clone3));
+        assert!(!wl.contains(&libc::SYS_socket)); // Filtered separately
+        assert!(!wl.contains(&libc::SYS_memfd_create));
+        assert!(!wl.contains(&libc::SYS_execveat));
+        assert!(!wl.contains(&libc::SYS_setresuid));
+        assert!(!wl.contains(&libc::SYS_setresgid));
+        assert!(!wl.contains(&libc::SYS_setsid));
+        assert!(!wl.contains(&libc::SYS_setpgid));
     }
 
     #[test]
     fn safe_syscalls_present() {
-        assert!(DEFAULT_WHITELIST.contains(&libc::SYS_fork));
-        assert!(DEFAULT_WHITELIST.contains(&libc::SYS_vfork));
-        assert!(DEFAULT_WHITELIST.contains(&libc::SYS_execve));
-        assert!(DEFAULT_WHITELIST.contains(&libc::SYS_sendfile));
-        assert!(DEFAULT_WHITELIST.contains(&libc::SYS_close_range));
+        let wl = default_whitelist();
+        assert!(wl.contains(&libc::SYS_execve));
+        assert!(wl.contains(&libc::SYS_sendfile));
+        assert!(wl.contains(&libc::SYS_close_range));
+        #[cfg(target_arch = "x86_64")]
+        {
+            assert!(wl.contains(&libc::SYS_fork));
+            assert!(wl.contains(&libc::SYS_vfork));
+        }
     }
 
     #[test]
@@ -738,7 +804,7 @@ mod tests {
 
     #[test]
     fn notify_filter_structure() {
-        let syscalls = &[libc::SYS_openat, libc::SYS_open, libc::SYS_stat];
+        let syscalls = &[libc::SYS_openat, libc::SYS_newfstatat, libc::SYS_statx];
         let filter = build_notify_filter(syscalls);
         // 3 (arch) + 1 (load) + 3 (checks) + 1 (allow) + 1 (notify) = 9
         assert_eq!(filter.len(), 9);
@@ -746,9 +812,14 @@ mod tests {
 
     #[test]
     fn notify_fs_syscalls_present() {
-        assert!(NOTIFY_FS_SYSCALLS.contains(&libc::SYS_openat));
-        assert!(NOTIFY_FS_SYSCALLS.contains(&libc::SYS_open));
-        assert!(NOTIFY_FS_SYSCALLS.contains(&libc::SYS_stat));
-        assert!(NOTIFY_FS_SYSCALLS.contains(&libc::SYS_readlink));
+        let nfs = notify_fs_syscalls();
+        assert!(nfs.contains(&libc::SYS_openat));
+        assert!(nfs.contains(&libc::SYS_readlinkat));
+        #[cfg(target_arch = "x86_64")]
+        {
+            assert!(nfs.contains(&libc::SYS_open));
+            assert!(nfs.contains(&libc::SYS_stat));
+            assert!(nfs.contains(&libc::SYS_readlink));
+        }
     }
 }

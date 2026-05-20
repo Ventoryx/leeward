@@ -20,6 +20,7 @@
 //! - `CLD_EXITED` - Normal exit with exit code
 //! - `CLD_KILLED` / `CLD_DUMPED` - Killed by signal
 
+use std::borrow::Cow;
 use std::io;
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::time::{Duration, Instant};
@@ -30,6 +31,7 @@ use crate::plan::Plan;
 use crate::workspace::Workspace;
 
 /// Output from a sandboxed execution.
+#[must_use]
 #[derive(Debug, Clone)]
 pub struct Output {
     pub stdout: Vec<u8>,
@@ -47,13 +49,13 @@ impl Output {
     }
 
     #[inline]
-    pub fn stdout_str(&self) -> String {
-        String::from_utf8_lossy(&self.stdout).into_owned()
+    pub fn stdout_str(&self) -> Cow<'_, str> {
+        String::from_utf8_lossy(&self.stdout)
     }
 
     #[inline]
-    pub fn stderr_str(&self) -> String {
-        String::from_utf8_lossy(&self.stderr).into_owned()
+    pub fn stderr_str(&self) -> Cow<'_, str> {
+        String::from_utf8_lossy(&self.stderr)
     }
 }
 
@@ -67,6 +69,8 @@ pub enum Status {
 }
 
 /// Monitor the child process and collect output.
+// Casts are safe: poll timeout capped at 100ms fits i32; max_output fits usize on 64-bit.
+#[allow(clippy::cast_possible_truncation)]
 pub fn monitor(pidfd: OwnedFd, workspace: &Workspace, plan: &Plan) -> io::Result<Output> {
     let start = Instant::now();
     let deadline = start + plan.timeout;
@@ -187,6 +191,8 @@ pub fn monitor(pidfd: OwnedFd, workspace: &Workspace, plan: &Plan) -> io::Result
 }
 
 /// Write stdin data to the child process.
+// Cast is safe: libc::write returns bytes written which fits in usize on 64-bit.
+#[allow(clippy::cast_sign_loss)]
 pub fn write_stdin(workspace: &Workspace, data: &[u8]) -> io::Result<()> {
     let fd = workspace.pipes.stdin.write.as_raw_fd();
     let mut written = 0;
@@ -220,6 +226,8 @@ pub(crate) fn set_nonblocking(fd: RawFd) -> io::Result<()> {
     }
 }
 
+// Cast is safe: libc::read returns bytes read which fits in usize on 64-bit.
+#[allow(clippy::cast_sign_loss)]
 #[inline]
 fn read_nonblocking(fd: RawFd, buf: &mut [u8]) -> io::Result<usize> {
     let ret = unsafe { libc::read(fd, buf.as_mut_ptr().cast::<libc::c_void>(), buf.len()) };
@@ -230,6 +238,8 @@ fn read_nonblocking(fd: RawFd, buf: &mut [u8]) -> io::Result<usize> {
     }
 }
 
+// Cast is safe: max_output fits in usize on 64-bit.
+#[allow(clippy::cast_possible_truncation)]
 fn drain_remaining(fd: RawFd, output: &mut Vec<u8>, buf: &mut [u8], max_output: u64) {
     let max = max_output as usize;
     loop {
@@ -249,6 +259,8 @@ fn drain_remaining(fd: RawFd, output: &mut Vec<u8>, buf: &mut [u8], max_output: 
     }
 }
 
+// Cast is safe: pidfd (small fd number) fits in libc::id_t (u32).
+#[allow(clippy::cast_sign_loss)]
 pub(crate) fn wait_for_exit(pidfd: RawFd) -> io::Result<(Option<i32>, Option<i32>)> {
     let mut siginfo: libc::siginfo_t = unsafe { std::mem::zeroed() };
     let ret = unsafe {

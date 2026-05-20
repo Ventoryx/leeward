@@ -286,6 +286,7 @@ impl UserFile {
 ///
 /// let output = Executor::run(plan)?;
 /// ```
+#[must_use]
 #[derive(Debug, Clone)]
 pub struct Plan {
     pub cmd: Vec<String>,
@@ -460,9 +461,8 @@ impl Plan {
 
 fn default_env() -> HashMap<String, String> {
     // Default PATH covers common locations on FHS and NixOS systems.
-    // For NixOS, the caller (evalbox) should set PATH from SYSTEM_PATHS.
     let default_path = if std::path::Path::new("/nix/store").exists() {
-        "/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/usr/bin:/bin"
+        "/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/usr/local/bin:/usr/bin:/bin"
     } else {
         "/usr/local/bin:/usr/bin:/bin"
     };

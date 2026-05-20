@@ -1,6 +1,15 @@
 //! Go code wrapping utilities.
 
+use std::sync::LazyLock;
+
 use regex::Regex;
+
+static RE_IMPORT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b([a-z]+)\.([A-Z][a-zA-Z0-9]*)").unwrap());
+static RE_MAIN_FUNC: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?m)^func\s+main\s*\(\s*\)").unwrap());
+static RE_PACKAGE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^package\s+").unwrap());
+static RE_IMPORT_DECL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^import\s+").unwrap());
 
 pub const AUTO_IMPORTS: &[(&str, &str)] = &[
     ("fmt", "fmt"),
@@ -78,9 +87,8 @@ pub fn wrap_go_code(code: &str, auto_wrap: bool, auto_import: bool) -> String {
 
 fn detect_imports(code: &str) -> Vec<String> {
     let mut imports = Vec::new();
-    let re = Regex::new(r"\b([a-z]+)\.([A-Z][a-zA-Z0-9]*)").unwrap();
 
-    for cap in re.captures_iter(code) {
+    for cap in RE_IMPORT.captures_iter(code) {
         let pkg = &cap[1];
         if let Some((_, import_path)) = AUTO_IMPORTS.iter().find(|(name, _)| *name == pkg) {
             let import = import_path.to_string();
@@ -94,18 +102,15 @@ fn detect_imports(code: &str) -> Vec<String> {
 }
 
 fn has_main_func(code: &str) -> bool {
-    let re = Regex::new(r"(?m)^func\s+main\s*\(\s*\)").unwrap();
-    re.is_match(code)
+    RE_MAIN_FUNC.is_match(code)
 }
 
 fn has_package_decl(code: &str) -> bool {
-    let re = Regex::new(r"(?m)^package\s+").unwrap();
-    re.is_match(code)
+    RE_PACKAGE.is_match(code)
 }
 
 fn has_imports(code: &str) -> bool {
-    let re = Regex::new(r"(?m)^import\s+").unwrap();
-    re.is_match(code)
+    RE_IMPORT_DECL.is_match(code)
 }
 
 #[cfg(test)]

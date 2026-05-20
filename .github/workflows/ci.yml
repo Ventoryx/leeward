@@ -53,6 +53,13 @@ jobs:
   #           ${{ matrix.distro }} \
   #           "$TEST_BIN" --ignored --test-threads=1
 
+  cargo-deny:
+    name: Cargo Deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+
   semver-check:
     name: SemVer Check
     runs-on: ubuntu-latest

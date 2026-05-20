@@ -12,6 +12,7 @@ use crate::output::Output;
 ///
 /// Created by [`shell::run()`](super::run). Configure with method chaining,
 /// then execute with `.exec()`.
+#[must_use]
 #[derive(Debug, Clone)]
 pub struct ShellBuilder {
     script: String,

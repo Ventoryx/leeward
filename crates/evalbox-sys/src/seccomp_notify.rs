@@ -40,7 +40,7 @@ pub const SECCOMP_ADDFD_FLAG_SEND: u32 = 1 << 0;
 pub const SECCOMP_ADDFD_FLAG_SETFD: u32 = 1 << 1;
 
 // ioctl numbers for seccomp notify (from kernel headers)
-// These are architecture-dependent; values below are for x86_64.
+// These use the "new-style" ioctl encoding which is consistent across x86_64 and aarch64.
 // SECCOMP_IOCTL_NOTIF_RECV = SECCOMP_IOWR(0, struct seccomp_notif)
 // SECCOMP_IOCTL_NOTIF_SEND = SECCOMP_IOWR(1, struct seccomp_notif_resp)
 // SECCOMP_IOCTL_NOTIF_ID_VALID = SECCOMP_IOW(2, __u64)
@@ -134,6 +134,8 @@ pub struct SeccompNotifAddfd {
 /// # Errors
 ///
 /// Returns `Errno` if the filter cannot be installed.
+// Cast is safe: syscall returns a small fd number that fits in i32.
+#[allow(clippy::cast_possible_truncation)]
 pub unsafe fn seccomp_set_mode_filter_listener(fprog: &SockFprog) -> Result<OwnedFd, Errno> {
     unsafe {
         let ret = libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);

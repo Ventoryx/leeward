@@ -58,9 +58,11 @@ pub enum CheckError {
     KernelVersionReadFailed,
 }
 
-// Minimum kernel version: 6.12 (Landlock ABI 5 with SCOPE_SIGNAL + SCOPE_ABSTRACT_UNIX_SOCKET)
-const MIN_KERNEL_VERSION: (u32, u32, u32) = (6, 12, 0);
-const MIN_LANDLOCK_ABI: u32 = 5;
+// Minimum kernel version: 6.7 (Landlock ABI 4 with TCP network + IOCTL_DEV)
+// ABI 5 (kernel 6.12+) adds SCOPE_SIGNAL + SCOPE_ABSTRACT_UNIX_SOCKET
+// but is not required — lockdown.rs degrades gracefully with a warning.
+const MIN_KERNEL_VERSION: (u32, u32, u32) = (6, 7, 0);
+const MIN_LANDLOCK_ABI: u32 = 4;
 
 static SYSTEM_INFO: OnceLock<Result<SystemInfo, CheckError>> = OnceLock::new();
 
@@ -154,15 +156,13 @@ mod tests {
 
     #[test]
     fn test_check() {
-        match check() {
-            Ok(info) => {
-                println!("Kernel version: {:?}", info.kernel_version);
-                println!("Landlock ABI: {}", info.landlock_abi);
-                println!("Seccomp enabled: {}", info.seccomp_enabled);
-            }
-            Err(e) => {
-                println!("System check failed: {e}");
-            }
+        // Verify it doesn't panic and returns a valid result
+        let result = check();
+        assert!(result.is_ok() || result.is_err());
+        if let Ok(info) = result {
+            assert!(info.kernel_version.0 > 0, "major version should be > 0");
+            assert!(info.landlock_abi > 0, "landlock ABI should be > 0");
+            assert!(info.seccomp_enabled, "seccomp should be enabled");
         }
     }
 }

@@ -21,6 +21,7 @@ static PROBE_CACHE: LazyLock<ProbeCache> = LazyLock::new(ProbeCache::new);
 ///
 /// Created by [`python::run()`](super::run). Configure with method chaining,
 /// then execute with `.exec()`.
+#[must_use]
 #[derive(Debug, Clone)]
 pub struct PythonBuilder {
     code: String,

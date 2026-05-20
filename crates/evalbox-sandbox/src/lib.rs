@@ -26,9 +26,6 @@
 //! - Linux kernel 6.12+ (for Landlock ABI 5)
 //! - Seccomp enabled in kernel
 
-#![allow(clippy::cast_possible_truncation)]
-#![allow(clippy::cast_sign_loss)]
-
 pub mod executor;
 pub mod isolation;
 pub mod monitor;
