@@ -35,7 +35,7 @@
 //! }
 //! ```
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
 use std::io::{self, Write as _};
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
@@ -49,7 +49,7 @@ use rustix::process::{Pid, PidfdFlags, Signal, pidfd_open, pidfd_send_signal};
 use thiserror::Error;
 
 use evalbox_sys::seccomp::{
-    DEFAULT_WHITELIST, NOTIFY_FS_SYSCALLS, SockFprog, build_notify_filter, build_whitelist_filter,
+    SockFprog, build_notify_filter, build_whitelist_filter, default_whitelist, notify_fs_syscalls,
 };
 use evalbox_sys::seccomp_notify::seccomp_set_mode_filter_listener;
 use evalbox_sys::{check, last_errno, seccomp::seccomp_set_mode_filter};
@@ -165,6 +165,27 @@ struct SpawnedSandbox {
     workspace: std::mem::ManuallyDrop<Workspace>,
 }
 
+impl Drop for SpawnedSandbox {
+    fn drop(&mut self) {
+        // Close remaining pipe fds. Some may already be closed by
+        // close_parent_pipe_ends or the event loop (EBADF is harmless).
+        unsafe {
+            if self.stdin_fd >= 0 {
+                libc::close(self.stdin_fd);
+            }
+            if self.stdout_fd >= 0 {
+                libc::close(self.stdout_fd);
+            }
+            if self.stderr_fd >= 0 {
+                libc::close(self.stderr_fd);
+            }
+        }
+        // Clean up temp directory without dropping workspace (which would
+        // trigger OwnedFd double-close for fds already closed by libc::close).
+        let _ = std::fs::remove_dir_all(self.workspace.root());
+    }
+}
+
 /// Internal state for a running sandbox.
 struct SandboxState {
     spawned: SpawnedSandbox,
@@ -253,6 +274,7 @@ impl Executor {
             None
         };
 
+        // SAFETY: fork is safe, returns child pid in parent, 0 in child, or -1 on error.
         let child_pid = unsafe { libc::fork() };
         if child_pid < 0 {
             return Err(ExecutorError::Fork(last_errno()));
@@ -270,6 +292,11 @@ impl Executor {
             }
         }
 
+        // SAFETY: child_pid is a valid, just-forked PID. There is a theoretical race
+        // between fork() and pidfd_open() if PIDs wrap around in microseconds, but this
+        // is extremely unlikely. The ideal fix is clone3(CLONE_PIDFD) which atomically
+        // returns a pidfd, but is complex to implement with the current fork-based
+        // architecture. Acceptable for v0.1.x.
         let pid = unsafe { Pid::from_raw_unchecked(child_pid) };
         let pidfd = pidfd_open(pid, PidfdFlags::empty()).map_err(ExecutorError::Pidfd)?;
 
@@ -395,6 +422,8 @@ impl Executor {
     }
 
     /// Write data to a sandbox's stdin.
+    // Cast is safe: libc::write returns bytes written which fits in usize on 64-bit.
+    #[allow(clippy::cast_sign_loss)]
     pub fn write_stdin(&mut self, id: SandboxId, data: &[u8]) -> io::Result<usize> {
         if let Some(state) = self.sandboxes.get(&id) {
             let fd = state.spawned.stdin_fd;
@@ -435,6 +464,9 @@ impl Executor {
         }
     }
 
+    // Cast is safe: libc::read returns bytes read (positive) which fits in usize;
+    // max_output fits in usize on 64-bit.
+    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
     fn read_pipe(&mut self, sandbox_id: SandboxId, is_stdout: bool, events: &mut Vec<Event>) {
         let Some(state) = self.sandboxes.get_mut(&sandbox_id) else {
             return;
@@ -495,6 +527,8 @@ impl Executor {
         }
     }
 
+    // Cast is safe: max_output fits in usize on 64-bit.
+    #[allow(clippy::cast_possible_truncation)]
     fn check_completions(&mut self, events: &mut Vec<Event>) -> io::Result<()> {
         let now = Instant::now();
         let mut to_remove = Vec::new();
@@ -575,6 +609,7 @@ fn poll_or_kill(fd: RawFd, child_pid: libc::pid_t, msg: &str) -> Result<(), Exec
         events: libc::POLLIN,
         revents: 0,
     };
+    // SAFETY: pollfd is valid, nfds=1, timeout in ms.
     if unsafe { libc::poll(&mut pfd, 1, 30000) } <= 0 {
         unsafe { libc::kill(child_pid, libc::SIGKILL) };
         return Err(ExecutorError::ChildSetup(msg.into()));
@@ -638,6 +673,7 @@ fn spawn_sandbox(plan: Plan) -> Result<SpawnedSandbox, ExecutorError> {
         None
     };
 
+    // SAFETY: fork is safe, returns child pid in parent, 0 in child, or -1 on error.
     let child_pid = unsafe { libc::fork() };
     if child_pid < 0 {
         return Err(ExecutorError::Fork(last_errno()));
@@ -654,6 +690,7 @@ fn spawn_sandbox(plan: Plan) -> Result<SpawnedSandbox, ExecutorError> {
         }
     }
 
+    // SAFETY: See comment in Executor::run() about fork/pidfd_open race window.
     let pid = unsafe { Pid::from_raw_unchecked(child_pid) };
     let pidfd = pidfd_open(pid, PidfdFlags::empty()).map_err(ExecutorError::Pidfd)?;
 
@@ -717,6 +754,9 @@ fn blocking_parent(
     workspace: Workspace,
     plan: Plan,
 ) -> Result<Output, ExecutorError> {
+    // ManuallyDrop prevents OwnedFd double-close: we close pipe fds via libc::close
+    // at specific points (stdin.write before monitor for EOF, rest after monitor),
+    // and OwnedFd::Drop must not run again on those same fds.
     let workspace = std::mem::ManuallyDrop::new(workspace);
 
     close_parent_pipe_ends(&workspace);
@@ -726,6 +766,7 @@ fn blocking_parent(
     if let Some(ref stdin_data) = plan.stdin {
         write_stdin(&workspace, stdin_data).map_err(ExecutorError::Monitor)?;
     }
+    // Close stdin write end to signal EOF to child
     unsafe { libc::close(workspace.pipes.stdin.write.as_raw_fd()) };
 
     let result = monitor(pidfd, &workspace, &plan).map_err(ExecutorError::Monitor);
@@ -736,6 +777,10 @@ fn blocking_parent(
         libc::close(workspace.pipes.sync.child_ready_fd());
         libc::close(workspace.pipes.sync.parent_done_fd());
     }
+
+    // Clean up temp directory. We can't drop workspace normally because
+    // ManuallyDrop prevents it (intentionally, to avoid OwnedFd double-close).
+    let _ = std::fs::remove_dir_all(workspace.root());
 
     result
 }
@@ -752,6 +797,8 @@ fn blocking_parent(
 /// 8. Wait for parent signal
 /// 9. `close_range(3, MAX, 0)`
 /// 10. execve
+// Cast is safe: BPF filter length fits in u16 (max ~220 instructions).
+#[allow(clippy::cast_possible_truncation)]
 fn child_process(
     workspace: &Workspace,
     plan: &Plan,
@@ -786,7 +833,8 @@ fn child_process(
 
     // 5. If notify mode != Disabled: install notify seccomp filter, send listener fd
     if plan.notify_mode != NotifyMode::Disabled {
-        let notify_filter = build_notify_filter(NOTIFY_FS_SYSCALLS);
+        let nfs = notify_fs_syscalls();
+        let notify_filter = build_notify_filter(&nfs);
         let fprog = SockFprog {
             len: notify_filter.len() as u16,
             filter: notify_filter.as_ptr(),
@@ -832,6 +880,7 @@ fn setup_stdio(workspace: &Workspace) -> Result<(), ExecutorError> {
     let stdout_fd = workspace.pipes.stdout.write.as_raw_fd();
     let stderr_fd = workspace.pipes.stderr.write.as_raw_fd();
 
+    // SAFETY: dup2 is safe with valid fds obtained from OwnedFd; close is always safe.
     unsafe {
         libc::close(0);
         libc::close(1);
@@ -849,21 +898,21 @@ fn setup_stdio(workspace: &Workspace) -> Result<(), ExecutorError> {
     Ok(())
 }
 
+// Cast is safe: filter length fits in u16 (max whitelist is 200 + ~20 overhead).
+#[allow(clippy::cast_possible_truncation)]
 fn apply_seccomp(plan: &Plan) -> Result<(), ExecutorError> {
+    let base = default_whitelist();
     let whitelist: Vec<i64> = if let Some(ref syscalls) = plan.syscalls {
-        let mut wl: Vec<i64> = DEFAULT_WHITELIST
-            .iter()
-            .copied()
-            .filter(|s| !syscalls.denied.contains(s))
-            .collect();
-        for s in &syscalls.allowed {
-            if !wl.contains(s) {
-                wl.push(*s);
-            }
+        let mut wl_set: HashSet<i64> = base.into_iter().collect();
+        for s in &syscalls.denied {
+            wl_set.remove(s);
         }
-        wl
+        for s in &syscalls.allowed {
+            wl_set.insert(*s);
+        }
+        wl_set.into_iter().collect()
     } else {
-        DEFAULT_WHITELIST.to_vec()
+        base
     };
 
     let filter = build_whitelist_filter(&whitelist);

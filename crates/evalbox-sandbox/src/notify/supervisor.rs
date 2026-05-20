@@ -107,17 +107,14 @@ impl Supervisor {
         }))
     }
 
+    // Casts are safe: SYS_* constants fit i32; args values are kernel ABI (small ints for flags/fds).
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     fn handle_virtualize(&self, notif: &SeccompNotif) -> io::Result<Option<NotifyEvent>> {
         let syscall_nr = notif.data.nr;
 
-        // For openat-family syscalls, args[1] is the pathname pointer
-        // For open/creat, args[0] is the pathname pointer
-        let path_addr = if syscall_nr == libc::SYS_openat as i32
-            || syscall_nr == libc::SYS_newfstatat as i32
-            || syscall_nr == libc::SYS_faccessat as i32
-            || syscall_nr == libc::SYS_faccessat2 as i32
-            || syscall_nr == libc::SYS_readlinkat as i32
-        {
+        // For *at()-family syscalls, args[1] is the pathname pointer.
+        // For legacy syscalls (open/creat, x86_64 only), args[0] is the pathname pointer.
+        let path_addr = if is_at_syscall(syscall_nr) {
             notif.data.args[1]
         } else {
             notif.data.args[0]
@@ -140,11 +137,8 @@ impl Supervisor {
 
         // Try to translate path
         if let Some(real_path) = self.vfs.translate(&path) {
-            // For openat: open the file ourselves and inject the fd
-            if syscall_nr == libc::SYS_openat as i32
-                || syscall_nr == libc::SYS_open as i32
-                || syscall_nr == libc::SYS_creat as i32
-            {
+            // For open-family: open the file ourselves and inject the fd
+            if is_open_syscall(syscall_nr) {
                 let flags = if syscall_nr == libc::SYS_openat as i32 {
                     notif.data.args[2] as i32
                 } else {
@@ -186,6 +180,8 @@ impl Supervisor {
             .map_err(|e| io::Error::from_raw_os_error(e.raw_os_error()))
     }
 
+    // Cast is safe: fd from libc::open is a small non-negative int fitting u32.
+    #[allow(clippy::cast_sign_loss)]
     fn open_and_inject(
         &self,
         notif: &SeccompNotif,
@@ -242,33 +238,67 @@ impl Supervisor {
     }
 }
 
+/// Returns true if this is an *at()-family syscall where args[1] is the pathname.
+#[allow(clippy::cast_possible_truncation)]
+fn is_at_syscall(nr: i32) -> bool {
+    let nr = nr as i64;
+    nr == libc::SYS_openat
+        || nr == libc::SYS_newfstatat
+        || nr == libc::SYS_faccessat
+        || nr == libc::SYS_faccessat2
+        || nr == libc::SYS_readlinkat
+}
+
+/// Returns true if this is an open-family syscall (fd injection target).
+#[allow(clippy::cast_possible_truncation)]
+fn is_open_syscall(nr: i32) -> bool {
+    let nr = nr as i64;
+    if nr == libc::SYS_openat {
+        return true;
+    }
+    #[cfg(target_arch = "x86_64")]
+    if nr == libc::SYS_open || nr == libc::SYS_creat {
+        return true;
+    }
+    false
+}
+
 /// Map syscall number to name for logging.
+// Cast is safe: i32 syscall number to i64 is always lossless.
+#[allow(clippy::cast_possible_truncation)]
 fn syscall_name(nr: i32) -> &'static str {
     match nr as i64 {
         libc::SYS_openat => "openat",
-        libc::SYS_open => "open",
-        libc::SYS_creat => "creat",
-        libc::SYS_access => "access",
         libc::SYS_faccessat => "faccessat",
         libc::SYS_faccessat2 => "faccessat2",
-        libc::SYS_stat => "stat",
-        libc::SYS_lstat => "lstat",
         libc::SYS_newfstatat => "newfstatat",
         libc::SYS_statx => "statx",
-        libc::SYS_readlink => "readlink",
         libc::SYS_readlinkat => "readlinkat",
+        #[cfg(target_arch = "x86_64")]
+        libc::SYS_open => "open",
+        #[cfg(target_arch = "x86_64")]
+        libc::SYS_creat => "creat",
+        #[cfg(target_arch = "x86_64")]
+        libc::SYS_access => "access",
+        #[cfg(target_arch = "x86_64")]
+        libc::SYS_stat => "stat",
+        #[cfg(target_arch = "x86_64")]
+        libc::SYS_lstat => "lstat",
+        #[cfg(target_arch = "x86_64")]
+        libc::SYS_readlink => "readlink",
         _ => "unknown",
     }
 }
 
 #[cfg(test)]
+#[allow(clippy::cast_possible_truncation)]
 mod tests {
     use super::*;
 
     #[test]
     fn syscall_names() {
         assert_eq!(syscall_name(libc::SYS_openat as i32), "openat");
-        assert_eq!(syscall_name(libc::SYS_stat as i32), "stat");
+        assert_eq!(syscall_name(libc::SYS_newfstatat as i32), "newfstatat");
         assert_eq!(syscall_name(9999), "unknown");
     }
 }
