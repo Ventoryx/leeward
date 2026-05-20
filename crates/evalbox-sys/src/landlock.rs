@@ -103,6 +103,8 @@ pub struct LandlockPathBeneathAttr {
 /// # Errors
 ///
 /// Returns `Errno` if the kernel doesn't support Landlock.
+// Cast is safe: landlock ABI version fits in u32 (currently 1-5).
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 pub fn landlock_abi_version() -> Result<u32, Errno> {
     // SAFETY: Passing null with size 0 and VERSION flag queries the ABI version.
     let ret = unsafe {
@@ -125,6 +127,8 @@ pub fn landlock_abi_version() -> Result<u32, Errno> {
 /// # Errors
 ///
 /// Returns `Errno` if the ruleset creation fails.
+// Cast is safe: syscall returns a small fd number that fits in i32.
+#[allow(clippy::cast_possible_truncation)]
 pub fn landlock_create_ruleset(attr: &LandlockRulesetAttr) -> Result<OwnedFd, Errno> {
     // SAFETY: attr points to valid memory with correct size.
     let ret = unsafe {

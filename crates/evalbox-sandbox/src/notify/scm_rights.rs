@@ -29,6 +29,8 @@ pub fn create_socketpair() -> io::Result<(OwnedFd, OwnedFd)> {
 }
 
 /// Send a file descriptor over a unix socket using `SCM_RIGHTS`.
+// Casts are safe: size_of::<RawFd>() is 4 which fits u32; CMSG_SPACE returns small values fitting usize.
+#[allow(clippy::cast_possible_truncation)]
 pub fn send_fd(socket: RawFd, fd: RawFd) -> io::Result<()> {
     let data = [0u8; 1];
     let iov = libc::iovec {
@@ -72,6 +74,8 @@ pub fn send_fd(socket: RawFd, fd: RawFd) -> io::Result<()> {
 }
 
 /// Receive a file descriptor from a unix socket using `SCM_RIGHTS`.
+// Casts are safe: size_of::<RawFd>() is 4 which fits u32; CMSG_SPACE returns small values fitting usize.
+#[allow(clippy::cast_possible_truncation)]
 pub fn recv_fd(socket: RawFd) -> io::Result<OwnedFd> {
     let mut data = [0u8; 1];
     let mut iov = libc::iovec {

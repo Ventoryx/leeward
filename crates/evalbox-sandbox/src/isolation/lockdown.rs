@@ -247,6 +247,8 @@ fn set_no_new_privs() -> Result<(), LockdownError> {
 }
 
 fn drop_all_caps() -> Result<(), LockdownError> {
+    // SAFETY: prctl with PR_CAP_AMBIENT_CLEAR_ALL and PR_CAPBSET_DROP is safe
+    // for any capability value 0..63. These calls only affect the current process.
     unsafe {
         libc::prctl(
             libc::PR_CAP_AMBIENT,

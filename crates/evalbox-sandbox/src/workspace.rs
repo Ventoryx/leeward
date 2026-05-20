@@ -70,6 +70,7 @@ pub struct SyncPair {
 
 impl SyncPair {
     pub fn new() -> io::Result<Self> {
+        // SAFETY: eventfd returns a valid fd on success, -1 on error.
         let child_ready = unsafe { libc::eventfd(0, 0) };
         if child_ready < 0 {
             return Err(io::Error::last_os_error());

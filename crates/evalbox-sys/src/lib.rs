@@ -22,8 +22,8 @@
 //! ## Seccomp-BPF
 //!
 //! Seccomp-BPF allows filtering syscalls via BPF programs. This crate provides
-//! a whitelist-based filter that allows ~40 safe syscalls and kills the process
-//! on any other syscall.
+//! an architecture-aware whitelist-based filter (x86_64 and aarch64) that allows
+//! safe syscalls and kills the process on any other syscall.
 //!
 //! ## Seccomp User Notify
 //!
@@ -34,9 +34,6 @@
 //!
 //! This crate contains raw syscall wrappers. Casts between integer types
 //! are unavoidable when interfacing with the kernel ABI.
-
-#![allow(clippy::cast_possible_truncation)]
-#![allow(clippy::cast_sign_loss)]
 
 pub mod check;
 pub mod landlock;
