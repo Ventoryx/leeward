@@ -1,0 +1,22 @@
+[package]
+name = "evalbox-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+evalbox = { path = "../crates/evalbox", features = ["python", "go", "shell"] }
+evalbox-sys = { path = "../crates/evalbox-sys" }
+
+# Prevent this from interfering with workspaces
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "fuzz_seccomp_filter"
+path = "fuzz_targets/fuzz_seccomp_filter.rs"
+doc = false
