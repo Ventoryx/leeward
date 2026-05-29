@@ -22,7 +22,7 @@
 //! ## Seccomp-BPF
 //!
 //! Seccomp-BPF allows filtering syscalls via BPF programs. This crate provides
-//! an architecture-aware whitelist-based filter (x86_64 and aarch64) that allows
+//! an architecture-aware whitelist-based filter (`x86_64` and `aarch64`) that allows
 //! safe syscalls and kills the process on any other syscall.
 //!
 //! ## Seccomp User Notify
