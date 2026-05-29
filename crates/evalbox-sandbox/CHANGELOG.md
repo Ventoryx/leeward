@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/fullzer4/evalbox/compare/evalbox-sandbox-v0.1.1...evalbox-sandbox-v0.2.0) - 2026-05-29
+
+### Added
+
+- ARM64 (aarch64) support, drop min kernel to 6.7
+
+### Other
+
+- granular clippy lints and SAFETY comments
+- code quality improvements
+
 ## [0.1.1](https://github.com/fullzer4/evalbox/compare/evalbox-sandbox-v0.1.0...evalbox-sandbox-v0.1.1) - 2026-02-17
 
 ### Fixed
