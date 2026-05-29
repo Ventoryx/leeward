@@ -8,7 +8,7 @@
 //!
 //! The BPF filter runs on every syscall:
 //!
-//! 1. Verify architecture is supported (x86_64 or aarch64, kill otherwise)
+//! 1. Verify architecture is supported (`x86_64` or `aarch64`, kill otherwise)
 //! 2. Load syscall number from `seccomp_data`
 //! 3. Block `clone3` entirely (cannot inspect flags in struct)
 //! 4. For `clone`, inspect flags and block namespace creation
@@ -166,7 +166,7 @@ pub struct SockFprog {
     pub filter: *const SockFilter,
 }
 
-/// Base syscalls allowed on all architectures (x86_64 and aarch64).
+/// Base syscalls allowed on all architectures (`x86_64` and `aarch64`).
 ///
 /// **Ordering**: Hot syscalls first for faster BPF linear scan.
 /// The kernel checks each JEQ instruction sequentially, so placing
@@ -352,11 +352,11 @@ const BASE_WHITELIST: &[i64] = &[
     libc::SYS_recvmmsg,
 ];
 
-/// Legacy x86_64 syscalls not available on aarch64.
+/// Legacy `x86_64` syscalls not available on `aarch64`.
 ///
-/// On aarch64, glibc always uses the modern `*at()` equivalents
+/// On `aarch64`, glibc always uses the modern `*at()` equivalents
 /// (e.g., `openat` instead of `open`, `newfstatat` instead of `stat`).
-/// These legacy syscalls only exist in the x86_64 syscall table.
+/// These legacy syscalls only exist in the `x86_64` syscall table.
 #[cfg(target_arch = "x86_64")]
 const LEGACY_WHITELIST: &[i64] = &[
     libc::SYS_fstat,
@@ -393,7 +393,7 @@ const LEGACY_WHITELIST: &[i64] = &[
     libc::SYS_signalfd,
 ];
 
-/// On aarch64, all equivalent functionality is provided by the modern
+/// On `aarch64`, all equivalent functionality is provided by the modern
 /// syscalls already in `BASE_WHITELIST`.
 #[cfg(target_arch = "aarch64")]
 const LEGACY_WHITELIST: &[i64] = &[];
@@ -401,7 +401,7 @@ const LEGACY_WHITELIST: &[i64] = &[];
 /// Returns the default syscall whitelist for the current architecture.
 ///
 /// Combines `BASE_WHITELIST` (common to all architectures) with
-/// `LEGACY_WHITELIST` (x86_64-only legacy syscalls).
+/// `LEGACY_WHITELIST` (`x86_64`-only legacy syscalls).
 pub fn default_whitelist() -> Vec<i64> {
     [BASE_WHITELIST, LEGACY_WHITELIST].concat()
 }
@@ -411,7 +411,7 @@ pub fn default_whitelist() -> Vec<i64> {
 /// ## Filter Layout
 ///
 /// ```text
-/// [0-2]   Architecture check (x86_64)
+/// [0-2]   Architecture check (`x86_64`)
 /// [3]     Load syscall number
 /// [4]     clone3 -> KILL
 /// [5]     clone -> clone_handler
@@ -681,7 +681,7 @@ const BASE_NOTIFY_FS_SYSCALLS: &[i64] = &[
     libc::SYS_readlinkat,
 ];
 
-/// Legacy FS syscalls intercepted on x86_64 only.
+/// Legacy FS syscalls intercepted on `x86_64` only.
 #[cfg(target_arch = "x86_64")]
 const LEGACY_NOTIFY_FS_SYSCALLS: &[i64] = &[
     libc::SYS_open,
