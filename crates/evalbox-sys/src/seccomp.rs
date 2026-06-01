@@ -219,12 +219,16 @@ const BASE_WHITELIST: &[i64] = &[
     libc::SYS_fsync,
     libc::SYS_fdatasync,
     libc::SYS_ftruncate,
+    #[cfg(target_arch = "x86_64")]
     libc::SYS_fadvise64,
     libc::SYS_pipe2,
     libc::SYS_ppoll,
     libc::SYS_pselect6,
     // Efficient file operations (Python/Node use these)
+    #[cfg(target_arch = "x86_64")]
     libc::SYS_sendfile,
+    #[cfg(target_arch = "aarch64")]
+    libc::SYS_sendfile64,
     libc::SYS_copy_file_range,
     libc::SYS_splice,
     libc::SYS_tee,
