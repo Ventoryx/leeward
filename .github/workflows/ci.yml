@@ -11,6 +11,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # ─── Linux x86_64: full Nix checks (clippy, fmt, test, doc) ───────
   nix-checks:
     name: Nix Checks
     runs-on: ubuntu-latest
@@ -24,35 +25,143 @@ jobs:
       - name: Run checks (clippy, fmt, test, doc)
         run: nix flake check -L
 
-  # E2E security tests require kernel 6.12+ (Landlock ABI v5).
-  # GHA ubuntu-latest currently ships 6.11; image 20260209 has 6.14 but hasn't propagated yet.
-  # Uncomment when runners get kernel 6.12+.
-  #
-  # e2e:
-  #   name: E2E (${{ matrix.distro }})
-  #   runs-on: ubuntu-latest
-  #   needs: nix-checks
-  #   permissions:
-  #     id-token: write
-  #     contents: read
-  #   strategy:
-  #     fail-fast: false
-  #     matrix:
-  #       distro: [ubuntu:24.04, fedora:41, alpine:3.21]
-  #   steps:
-  #     - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-  #     - uses: DeterminateSystems/determinate-nix-action@bafaa638b9d5ec0e7e3ac1a7fc80453ef1fd265f # v3
-  #     - uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # main
-  #     - name: Build security test binary
-  #       run: nix build -L .#security-test-bin
-  #     - name: Run security tests in ${{ matrix.distro }}
-  #       run: |
-  #         TEST_BIN=$(realpath result/bin/security_tests-*)
-  #         docker run --rm --privileged \
-  #           -v /nix/store:/nix/store:ro \
-  #           ${{ matrix.distro }} \
-  #           "$TEST_BIN" --ignored --test-threads=1
+  # ─── Linux ARM64: native build + unit tests ────────────────────────
+  arm64:
+    name: Linux ARM64
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
+      - name: Clippy
+        run: cargo clippy --workspace -- -D warnings
+
+      - name: Unit tests
+        run: cargo test --workspace
+
+  # ─── Windows: compile + platform-agnostic tests ───────────────────
+  #
+  # Validates cross-platform compilation and runs tests that don't
+  # require Linux syscalls (plan, validate, virtual_fs, policy).
+  # Runs on both x86_64 and ARM64 runners.
+  #
+  windows:
+    name: Windows ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: windows-latest
+          - arch: ARM64
+            runner: windows-11-arm
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          key: windows-${{ matrix.arch }}
+
+      - name: Check compilation
+        run: cargo check -p evalbox-sandbox
+
+      - name: Clippy
+        run: cargo clippy -p evalbox-sandbox -- -D warnings
+
+      - name: Unit tests
+        run: cargo test -p evalbox-sandbox
+
+  # ─── Cross-compile check (compilation only, no tests) ──────────────
+  #
+  # Verifies that the codebase compiles for all supported targets:
+  #   - aarch64-unknown-linux-gnu  (Linux ARM64, cross from x86_64)
+  #   - x86_64-unknown-linux-musl  (Linux x86_64 static/musl)
+  #   - aarch64-pc-windows-msvc    (Windows ARM64, cross-check)
+  #
+  cross-compile:
+    name: Cross (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-latest
+            install: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu musl-tools
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-latest
+            install: sudo apt-get update && sudo apt-get install -y musl-tools
+          - target: aarch64-pc-windows-msvc
+            runner: windows-latest
+            install: ""
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install cross-compilation tools
+        if: matrix.install != ''
+        run: ${{ matrix.install }}
+
+      - name: Check compilation
+        run: cargo check --workspace --target ${{ matrix.target }}
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+
+  # ─── E2E security tests (require kernel 6.12+ for Landlock ABI v5) ─
+  #
+  # Tests ACTUAL sandbox isolation: seccomp blocks, Landlock filesystem
+  # rules, network blocking, resource limits, CVE payloads.
+  #
+  # Minimum kernel for evalbox is 6.7 (Landlock ABI 4), but security
+  # tests exercise ABI 5 features (signal/IPC scoping) which need 6.12+.
+  #
+  # GHA ubuntu-latest ships kernel 6.11 — enable when runners get 6.12+.
+  #
+  e2e:
+    name: E2E (${{ matrix.distro }})
+    if: false # TODO: enable when GHA runners ship kernel 6.12+
+    runs-on: ubuntu-latest
+    needs: nix-checks
+    permissions:
+      id-token: write
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        distro: [ubuntu:24.04, fedora:41, alpine:3.21]
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: DeterminateSystems/determinate-nix-action@bafaa638b9d5ec0e7e3ac1a7fc80453ef1fd265f # v3
+      - uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # main
+
+      - name: Check kernel version
+        run: |
+          KVER=$(uname -r | cut -d. -f1-2)
+          echo "Kernel: $KVER"
+          if [ "$(echo "$KVER < 6.12" | bc)" -eq 1 ]; then
+            echo "::error::Kernel $KVER < 6.12, Landlock ABI v5 not available"
+            exit 1
+          fi
+
+      - name: Build security test binary
+        run: nix build -L .#security-test-bin
+
+      - name: Run security tests in ${{ matrix.distro }}
+        run: |
+          TEST_BIN=$(realpath result/bin/security_tests-*)
+          docker run --rm --privileged \
+            -v /nix/store:/nix/store:ro \
+            ${{ matrix.distro }} \
+            "$TEST_BIN" --ignored --test-threads=1
+
+  # ─── Dependency audit ──────────────────────────────────────────────
   cargo-deny:
     name: Cargo Deny
     runs-on: ubuntu-latest
@@ -60,6 +169,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: EmbarkStudios/cargo-deny-action@6c8f9facfa5047ec02d8485b6bf52b587b7777d1 # v2
 
+  # ─── SemVer compatibility ──────────────────────────────────────────
   semver-check:
     name: SemVer Check
     runs-on: ubuntu-latest

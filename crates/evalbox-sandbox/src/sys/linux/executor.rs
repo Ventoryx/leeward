@@ -35,7 +35,7 @@
 //! }
 //! ```
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::ffi::CString;
 use std::io::{self, Write as _};
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
@@ -49,21 +49,22 @@ use rustix::process::{Pid, PidfdFlags, Signal, pidfd_open, pidfd_send_signal};
 use thiserror::Error;
 
 use evalbox_sys::seccomp::{
-    SockFprog, build_notify_filter, build_whitelist_filter, default_whitelist, notify_fs_syscalls,
+    SockFprog, build_notify_filter, build_whitelist_filter, notify_fs_syscalls,
 };
 use evalbox_sys::seccomp_notify::seccomp_set_mode_filter_listener;
 use evalbox_sys::{check, last_errno, seccomp::seccomp_set_mode_filter};
 
-use crate::isolation::{LockdownError, close_extra_fds, lockdown};
-use crate::monitor::{Output, Status, monitor, set_nonblocking, wait_for_exit, write_stdin};
-use crate::notify::scm_rights;
+use super::lockdown::{LockdownError, close_extra_fds, lockdown};
+use super::monitor::{Output, Status, monitor, set_nonblocking, wait_for_exit, write_stdin};
+use super::notify::scm_rights;
+use super::workspace::Workspace;
 use crate::plan::{Mount, NotifyMode, Plan};
 use crate::resolve::{ResolvedBinary, resolve_binary};
 use crate::validate::validate_cmd;
-use crate::workspace::Workspace;
 
 /// Error during sandbox execution.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum ExecutorError {
     #[error("system check: {0}")]
     SystemCheck(String),
@@ -113,6 +114,7 @@ impl std::fmt::Display for SandboxId {
 
 /// Events emitted by the Executor.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum Event {
     /// Sandbox completed execution.
     Completed { id: SandboxId, output: Output },
@@ -901,21 +903,9 @@ fn setup_stdio(workspace: &Workspace) -> Result<(), ExecutorError> {
 // Cast is safe: filter length fits in u16 (max whitelist is 200 + ~20 overhead).
 #[allow(clippy::cast_possible_truncation)]
 fn apply_seccomp(plan: &Plan) -> Result<(), ExecutorError> {
-    let base = default_whitelist();
-    let whitelist: Vec<i64> = if let Some(ref syscalls) = plan.syscalls {
-        let mut wl_set: HashSet<i64> = base.into_iter().collect();
-        for s in &syscalls.denied {
-            wl_set.remove(s);
-        }
-        for s in &syscalls.allowed {
-            wl_set.insert(*s);
-        }
-        wl_set.into_iter().collect()
-    } else {
-        base
-    };
+    let config = super::policy::compile_seccomp(plan);
 
-    let filter = build_whitelist_filter(&whitelist);
+    let filter = build_whitelist_filter(&config.whitelist);
     let fprog = SockFprog {
         len: filter.len() as u16,
         filter: filter.as_ptr(),

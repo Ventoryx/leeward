@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 use crate::plan::Mount;
-use crate::sysinfo::{SYSTEM_PATHS, SystemPaths, SystemType};
+use crate::sys::sysinfo::{SYSTEM_PATHS, SystemPaths, SystemType};
 
 #[derive(Debug, Clone)]
 pub struct ResolvedBinary {
