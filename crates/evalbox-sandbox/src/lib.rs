@@ -26,17 +26,20 @@
 //! - Linux kernel 6.12+ (for Landlock ABI 5)
 //! - Seccomp enabled in kernel
 
-pub mod executor;
-pub mod isolation;
-pub mod monitor;
-pub mod notify;
+#[macro_use]
+mod macros;
+
+// Platform-agnostic modules
 pub mod plan;
 pub mod resolve;
-pub mod sysinfo;
 pub mod validate;
-pub mod workspace;
+pub mod virtual_fs;
 
-pub use executor::{Event, Executor, ExecutorError, SandboxId};
-pub use monitor::{Output, Status};
+// Platform-specific (dispatched via sys)
+pub mod sys;
+
+// Public re-exports
+pub use sys::{Event, Executor, ExecutorError, SandboxId};
+pub use sys::{Output, Status};
 pub use plan::{Landlock, Mount, NotifyMode, Plan, Syscalls, UserFile};
 pub use resolve::{ResolveError, ResolvedBinary, resolve_binary};

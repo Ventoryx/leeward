@@ -27,8 +27,8 @@ use std::time::{Duration, Instant};
 
 use rustix::process::{Signal, pidfd_send_signal};
 
+use super::workspace::Workspace;
 use crate::plan::Plan;
-use crate::workspace::Workspace;
 
 /// Output from a sandboxed execution.
 #[must_use]
@@ -61,6 +61,7 @@ impl Output {
 
 /// Status of the sandboxed execution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Status {
     Exited,
     Signaled,

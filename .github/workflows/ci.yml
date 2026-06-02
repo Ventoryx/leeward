@@ -11,8 +11,127 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # ─── Tier 0: fast feedback gate ─────────────────────────────────────
+  #
+  # Catches formatting, lint, dependency and semver issues in ~30s.
+  # Blocks all downstream jobs — no expensive runners are wasted on
+  # broken code.
+  #
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - name: Formatting
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --workspace -- -D warnings
+
+      - name: Cargo Deny
+        uses: EmbarkStudios/cargo-deny-action@6c8f9facfa5047ec02d8485b6bf52b587b7777d1 # v2
+
+      - name: SemVer Check
+        uses: obi1kenobi/cargo-semver-checks-action@6b69fcf40e9b5fb17adeb57e4b6ecd020649a239 # v2
+        with:
+          package: evalbox
+
+  # ─── Tier 1: build check (all targets) ──────────────────────────────
+  #
+  # Validates compilation for every supported target. Cross-compile
+  # targets use cargo check only (no tests). fail-fast: true — if it
+  # doesn't compile for one target, stop early.
+  #
+  build-check:
+    name: Check (${{ matrix.target }})
+    needs: lint
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            scope: "--workspace"
+            install: ""
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-latest
+            scope: "--workspace"
+            install: "sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu"
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            scope: "-p evalbox-sandbox"
+            install: ""
+          - target: aarch64-pc-windows-msvc
+            runner: windows-latest
+            scope: "-p evalbox-sandbox"
+            install: ""
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-latest
+            scope: "--workspace"
+            install: "sudo apt-get update && sudo apt-get install -y musl-tools"
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install tools
+        if: matrix.install != ''
+        run: ${{ matrix.install }}
+
+      - name: cargo check
+        run: cargo check ${{ matrix.scope }} --target ${{ matrix.target }}
+
+  # ─── Tier 2: tests (native runners only) ────────────────────────────
+  #
+  # Runs the full test suite on targets with native hardware.
+  # fail-fast: false — see all platform failures at once.
+  #
+  # Windows tests only evalbox-sandbox (platform-agnostic crate);
+  # evalbox-sys depends on Linux syscalls.
+  #
+  test:
+    name: Test (${{ matrix.name }})
+    needs: build-check
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x86_64
+            runner: ubuntu-latest
+            scope: "--workspace"
+          - name: Linux ARM64
+            runner: ubuntu-24.04-arm
+            scope: "--workspace"
+          - name: Windows x86_64
+            runner: windows-latest
+            scope: "-p evalbox-sandbox"
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - name: cargo test
+        run: cargo test ${{ matrix.scope }}
+
+  # ─── Tier 3: heavy checks ───────────────────────────────────────────
+  #
+  # Nix flake check (doc build, integration, reproducibility) and
+  # E2E security tests. Only run after all tests pass.
+  #
   nix-checks:
     name: Nix Checks
+    needs: test
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -21,51 +140,49 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: DeterminateSystems/determinate-nix-action@bafaa638b9d5ec0e7e3ac1a7fc80453ef1fd265f # v3
       - uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # main
-      - name: Run checks (clippy, fmt, test, doc)
+      - name: nix flake check
         run: nix flake check -L
 
-  # E2E security tests require kernel 6.12+ (Landlock ABI v5).
-  # GHA ubuntu-latest currently ships 6.11; image 20260209 has 6.14 but hasn't propagated yet.
-  # Uncomment when runners get kernel 6.12+.
+  # ─── E2E security tests (require kernel 6.12+ for Landlock ABI v5) ─
   #
-  # e2e:
-  #   name: E2E (${{ matrix.distro }})
-  #   runs-on: ubuntu-latest
-  #   needs: nix-checks
-  #   permissions:
-  #     id-token: write
-  #     contents: read
-  #   strategy:
-  #     fail-fast: false
-  #     matrix:
-  #       distro: [ubuntu:24.04, fedora:41, alpine:3.21]
-  #   steps:
-  #     - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-  #     - uses: DeterminateSystems/determinate-nix-action@bafaa638b9d5ec0e7e3ac1a7fc80453ef1fd265f # v3
-  #     - uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # main
-  #     - name: Build security test binary
-  #       run: nix build -L .#security-test-bin
-  #     - name: Run security tests in ${{ matrix.distro }}
-  #       run: |
-  #         TEST_BIN=$(realpath result/bin/security_tests-*)
-  #         docker run --rm --privileged \
-  #           -v /nix/store:/nix/store:ro \
-  #           ${{ matrix.distro }} \
-  #           "$TEST_BIN" --ignored --test-threads=1
-
-  cargo-deny:
-    name: Cargo Deny
+  # Tests ACTUAL sandbox isolation: seccomp blocks, Landlock filesystem
+  # rules, network blocking, resource limits, CVE payloads.
+  #
+  # GHA ubuntu-latest ships kernel 6.11 — enable when runners get 6.12+.
+  #
+  e2e:
+    name: E2E (${{ matrix.distro }})
+    if: false # TODO: enable when GHA runners ship kernel 6.12+
+    needs: test
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        distro: [ubuntu:24.04, fedora:41, alpine:3.21]
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: EmbarkStudios/cargo-deny-action@6c8f9facfa5047ec02d8485b6bf52b587b7777d1 # v2
+      - uses: DeterminateSystems/determinate-nix-action@bafaa638b9d5ec0e7e3ac1a7fc80453ef1fd265f # v3
+      - uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # main
 
-  semver-check:
-    name: SemVer Check
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-      - uses: obi1kenobi/cargo-semver-checks-action@6b69fcf40e9b5fb17adeb57e4b6ecd020649a239 # v2
-        with:
-          package: evalbox
+      - name: Check kernel version
+        run: |
+          KVER=$(uname -r | cut -d. -f1-2)
+          echo "Kernel: $KVER"
+          if [ "$(echo "$KVER < 6.12" | bc)" -eq 1 ]; then
+            echo "::error::Kernel $KVER < 6.12, Landlock ABI v5 not available"
+            exit 1
+          fi
+
+      - name: Build security test binary
+        run: nix build -L .#security-test-bin
+
+      - name: Run security tests in ${{ matrix.distro }}
+        run: |
+          TEST_BIN=$(realpath result/bin/security_tests-*)
+          docker run --rm --privileged \
+            -v /nix/store:/nix/store:ro \
+            ${{ matrix.distro }} \
+            "$TEST_BIN" --ignored --test-threads=1

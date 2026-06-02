@@ -93,6 +93,18 @@ const AUDIT_ARCH: u32 = 0xc000003e; // AUDIT_ARCH
 #[cfg(target_arch = "aarch64")]
 const AUDIT_ARCH: u32 = 0xc00000b7; // AUDIT_ARCH_AARCH64
 
+// Syscall numbers missing from the `libc` crate on aarch64.
+//
+// The kernel defines these via __NR3264_* macros in asm-generic/unistd.h
+// and they resolve to __NR_sendfile (71) and __NR_fadvise64 (223) on
+// 64-bit architectures. The Rust `libc` crate skips them for aarch64-gnu.
+// See: https://github.com/torvalds/linux/blob/master/include/uapi/asm-generic/unistd.h
+#[cfg(target_arch = "aarch64")]
+mod nr {
+    pub const SYS_SENDFILE: i64 = 71;
+    pub const SYS_FADVISE64: i64 = 223;
+}
+
 // seccomp_data offsets (same layout on x86_64 and aarch64)
 const OFFSET_SYSCALL_NR: u32 = 0;
 const OFFSET_ARCH: u32 = 4;
@@ -219,12 +231,18 @@ const BASE_WHITELIST: &[i64] = &[
     libc::SYS_fsync,
     libc::SYS_fdatasync,
     libc::SYS_ftruncate,
+    #[cfg(target_arch = "x86_64")]
     libc::SYS_fadvise64,
+    #[cfg(target_arch = "aarch64")]
+    nr::SYS_FADVISE64,
     libc::SYS_pipe2,
     libc::SYS_ppoll,
     libc::SYS_pselect6,
     // Efficient file operations (Python/Node use these)
+    #[cfg(target_arch = "x86_64")]
     libc::SYS_sendfile,
+    #[cfg(target_arch = "aarch64")]
+    nr::SYS_SENDFILE,
     libc::SYS_copy_file_range,
     libc::SYS_splice,
     libc::SYS_tee,
@@ -786,7 +804,10 @@ mod tests {
     fn safe_syscalls_present() {
         let wl = default_whitelist();
         assert!(wl.contains(&libc::SYS_execve));
+        #[cfg(target_arch = "x86_64")]
         assert!(wl.contains(&libc::SYS_sendfile));
+        #[cfg(target_arch = "aarch64")]
+        assert!(wl.contains(&nr::SYS_SENDFILE));
         assert!(wl.contains(&libc::SYS_close_range));
         #[cfg(target_arch = "x86_64")]
         {

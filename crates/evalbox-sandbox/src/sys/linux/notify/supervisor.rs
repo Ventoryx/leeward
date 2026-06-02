@@ -18,7 +18,7 @@ use evalbox_sys::seccomp_notify::{
     SeccompNotifResp, notif_addfd, notif_id_valid, notif_recv, notif_send,
 };
 
-use super::virtual_fs::VirtualFs;
+use crate::virtual_fs::VirtualFs;
 use crate::plan::NotifyMode;
 
 /// Events emitted by the supervisor for future user-facing notifications.

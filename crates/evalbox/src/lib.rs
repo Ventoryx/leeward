@@ -77,12 +77,15 @@ mod probe_cache;
 
 // Runtime implementations
 #[cfg(feature = "python")]
+#[cfg_attr(docsrs, doc(cfg(feature = "python")))]
 pub mod python;
 
 #[cfg(feature = "go")]
+#[cfg_attr(docsrs, doc(cfg(feature = "go")))]
 pub mod go;
 
 #[cfg(feature = "shell")]
+#[cfg_attr(docsrs, doc(cfg(feature = "shell")))]
 pub mod shell;
 
 // Public API - Core types
